@@ -56,12 +56,40 @@ const KUA_SEEDS = [
   "请从【我对未来的期待和勇气】角度夸夸我，给我一点前进的力量。",
   "请夸夸我身上【一个别人可能没注意到的优点】，让我觉得被真正看见。",
 ];
+
+// 名言库：无用户信息时随机混入
+const QUOTES = [
+  { text: "你今天感觉怎么样不重要，重要的是你还在这里。", author: null },
+  { text: "不要等到准备好了才开始，开始了才会准备好。", author: null },
+  { text: "每一个你觉得撑不下去的夜晚，后来都过去了。", author: null },
+  { text: "慢慢来，比较快。", author: "几米" },
+  { text: "你不需要变得完美，你只需要真实。", author: null },
+  { text: "生活不是等待风暴过去，而是学会在雨中起舞。", author: null },
+  { text: "勇气不是没有恐惧，而是带着恐惧继续前行。", author: null },
+  { text: "你已经比昨天的自己更勇敢了一点点。", author: null },
+  { text: "没有人天生强大，强大都是被逼出来的。", author: null },
+  { text: "做自己，因为别的角色都有人演了。", author: "王尔德" },
+  { text: "走得慢没关系，只要不停下来。", author: null },
+  { text: "种一棵树最好的时间是十年前，其次是现在。", author: "中国谚语" },
+  { text: "你值得被温柔对待，包括被你自己。", author: null },
+  { text: "今天能做到的最好，就是今天的最好。", author: null },
+  { text: "不是因为看到希望才坚持，而是坚持了才会看到希望。", author: null },
+];
+
 let lastSeedIndex = -1;
 const nextSeed = () => {
   let idx;
   do { idx = Math.floor(Math.random() * KUA_SEEDS.length); } while (idx === lastSeedIndex);
   lastSeedIndex = idx;
   return KUA_SEEDS[idx];
+};
+
+let lastQuoteIndex = -1;
+const getRandomQuote = () => {
+  let idx;
+  do { idx = Math.floor(Math.random() * QUOTES.length); } while (idx === lastQuoteIndex);
+  lastQuoteIndex = idx;
+  return QUOTES[idx];
 };
 
 // ─── API ─────────────────────────────────────────────────────────────────────
@@ -237,9 +265,10 @@ export default function KuaKuaApp() {
     const mood = moodLabel ? `用户今日心情：${moodLabel}，请根据此心情调整夸赞侧重。` : "";
     const blacklistLine = saved.blacklist.length>0
       ? `\n【严格禁止】绝对不能提及：${saved.blacklist.join("、")}。` : "";
-    const userContext = saved.userInfo.trim()
+    const hasInfo = saved.userInfo.trim().length > 0;
+    const userContext = hasInfo
       ? `用户提供的信息：${saved.userInfo}`
-      : `用户没有填写任何具体信息。`;
+      : `【当前状态：策略A强制执行】用户没有填写任何信息。你必须且只能夸赞"用户愿意来寻求鼓励"这个行为本身。严禁提及任何具体品质（如温柔、细心、坚持等），严禁编造任何细节，只说来寻求鼓励这件事很值得被肯定。`;
     return `你是一位温暖、真诚且洞察力极强的朋友。你的任务是根据用户提供的信息，给出恰到好处的夸赞。
 
 核心原则：宁缺毋滥，绝不编造事实，语气要像老友聊天一样自然、接地气，避免使用过于华丽或浮夸的辞藻。
@@ -262,7 +291,7 @@ export default function KuaKuaApp() {
 
 【输出规范】
 长度：简短有力，控制在 1-2 句话以内。
-禁令：严禁在用户没有提供信息时虚构背景或细节；严禁使用"天才"、"完美"、"震惊"等过度夸张词汇；严禁说教或鸡汤式口吻。
+禁令：严禁在用户没有提供信息时虚构背景或细节；严禁使用"天才"、"完美"、"震惊"等过度夸张词汇；严禁说教或鸡汤式口吻；严禁句尾用"呢"、"哦"、"哟"等语气词，听起来像阴阳怪气；语气要直接真诚，不要装可爱。
 
 ${nick?`称呼用户时用：${saved.nickname}。`:""}
 ${userContext}
@@ -274,16 +303,51 @@ ${extra}`;
   const genKua = useCallback(async () => {
     setAutoLoading(true);
     setHasStarted(true);
+
+    // 没有用户信息时，50% 概率直接展示名言
+    if (!saved.userInfo.trim() && Math.random() < 0.5) {
+      const q = getRandomQuote();
+      const display = q.author ? `「${q.text}」\n—— ${q.author}` : q.text;
+      setAutoText(display);
+      setAutoLoading(false);
+      return;
+    }
+
     try {
       const seed = nextSeed();
-      const text = await callClaude([{role:"user", content:seed}], buildPrompt());
+      let text = null;
+      let retries = 0;
+      while (!text && retries < 3) {
+        const res = await fetch("https://open.bigmodel.cn/api/paas/v4/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${ZHIPU_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "glm-4-flash-250414",
+            messages: [
+              { role: "system", content: buildPrompt() },
+              { role: "user", content: seed },
+            ],
+          }),
+        });
+        const data = await res.json();
+        if (res.status === 429) {
+          retries++;
+          await new Promise(r => setTimeout(r, 2000 * retries));
+          continue;
+        }
+        text = data.choices?.[0]?.message?.content || null;
+      }
+      if (!text) { setAutoLoading(false); return; }
       setAutoText(text);
       const today = new Date().toLocaleDateString("zh-CN");
       const time  = new Date().toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"});
       const moodLabel = todayMood ? (todayMood==="custom"?customMoodText:MOODS.find(m=>m.id===todayMood)?.label) : null;
       const newItem = { id:Date.now(), text, time, date:today, mood:moodLabel };
       setHistory(h => (h.length>0&&h[0].text===text) ? h : [newItem,...h].slice(0,100));
-    } catch { setAutoText("你已经很棒了，今天也要好好的 💛"); }
+    } catch { /* 静默失败，保留上一条内容 */ }
     setAutoLoading(false);
   }, [buildPrompt, todayMood, customMoodText]);
 
